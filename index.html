@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerador de TED - Bradesco</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; padding: 20px; background-color: #f8f9fa; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+        .container { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); max-width: 500px; width: 100%; text-align: center; }
+        .step { margin-bottom: 20px; text-align: left; border-bottom: 1px solid #eee; padding-bottom: 15px; }
+        .step label { font-weight: bold; display: block; margin-bottom: 8px; color: #333; }
+        input[type="file"] { width: 100%; font-size: 14px; }
+        button { background: #007bff; color: white; border: none; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; width: 100%; margin-top: 10px; }
+        button:hover { background: #0056b3; }
+        #status { margin-top: 20px; color: #28a745; font-weight: bold; }
+        .footer { font-size: 11px; color: #999; margin-top: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Gerador de TED</h2>
+    <p>Siga os passos abaixo para gerar o arquivo.</p>
+    
+    <div class="step">
+        <label>1. Tabela de De-Para (Referência):</label>
+        <input type="file" id="deparaFile" accept=".xlsx, .xls">
+    </div>
+
+    <div class="step">
+        <label>2. Planilha de Movimentação (Caixa):</label>
+        <input type="file" id="caixaFile" accept=".xlsx, .xls">
+    </div>
+    
+    <button onclick="processarTudo()">Gerar e Baixar</button>
+    <div id="status"></div>
+    <div class="footer">Nenhum dado é enviado para a internet.</div>
+</div>
+
+<script>
+    let dicionarioDePara = {};
+
+    async function processarTudo() {
+        const fDepara = document.getElementById('deparaFile').files[0];
+        const fCaixa = document.getElementById('caixaFile').files[0];
+
+        if (!fDepara || !fCaixa) {
+            alert("Por favor, selecione OS DOIS arquivos.");
+            return;
+        }
+
+        try {
+            // 1. Ler o De-Para para a memória
+            await lerDepara(fDepara);
+            
+            // 2. Processar a Movimentação
+            await lerCaixa(fCaixa);
+
+        } catch (err) {
+            alert("Erro no processamento: " + err.message);
+        }
+    }
+
+    function lerDepara(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const data = new Uint8Array(e.target.result);
+                const wb = XLSX.read(data, { type: 'array' });
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                
+                dicionarioDePara = {};
+                // Pula cabeçalho da tabela de depara (i=1)
+                for(let i=1; i<rows.length; i++){
+                    const r = rows[i];
+                    if(r[0]){
+                        dicionarioDePara[String(r[0]).trim()] = {
+                            txt: r[1], cnpj: r[7], fav: r[2], 
+                            banco: r[3], ag: r[4], conta: String(r[5] || "")
+                        };
+                    }
+                }
+                resolve();
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    function lerCaixa(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const data = new Uint8Array(e.target.result);
+                const wb = XLSX.read(data, { type: 'array' });
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+                const hoje = new Date();
+                const dataHoje = hoje.getFullYear() + String(hoje.getMonth() + 1).padStart(2, '0') + String(hoje.getDate()).padStart(2, '0');
+
+                let txtContent = "0#IR\n";
+                let startRow = 0;
+                for(let i=0; i<rows.length; i++) {
+                    if(rows[i] && rows[i][0] === "CIA") { startRow = i + 1; break; }
+                }
+
+                for(let i = startRow; i < rows.length; i++) {
+                    const row = rows[i];
+                    if(!row || !/^\d/.test(String(row[0] || ""))) continue;
+
+                    const carteiraExcel = String(row[4] || "").trim();
+                    const valResgate = Math.abs(parseFloat(row[11]) || 0);
+                    const valAplicacao = Math.abs(parseFloat(row[12]) || 0);
+                    
+                    const info = dicionarioDePara[carteiraExcel] || { txt: carteiraExcel, cnpj: "", fav: "", banco: "", ag: "", conta: "" };
+
+                    if (valResgate > 0 || valAplicacao > 0) {
+                        const movs = [];
+                        if (valAplicacao > 0) movs.push({ t: "I", v: valAplicacao });
+                        if (valResgate > 0) movs.push({ t: "R", v: valResgate });
+
+                        movs.forEach(m => {
+                            let linha = `#${dataHoje}#${info.txt}#${m.t}#${m.v}`;
+                            if (m.t === "I") {
+                                linha += `##1#${info.cnpj}#####I#TIPO_PESSOA: CNPJ / CNPJ: ${info.cnpj} / FAVORECIDO:  / BANCO:  / AGÊNCIA(S/DIG):  / Conta(c/ Digito): - / Tipo_Liq: DOC / Modo_Liq: STR / TipoConta_Favorecido: ####`;
+                            } else {
+                                const contaStr = String(info.conta);
+                                const cBase = contaStr.slice(0, -1);
+                                const cDig = contaStr.slice(-1);
+                                linha += `#${info.fav}#1#${info.cnpj}#${info.banco}#${info.ag}#${cBase}#${cDig}#I#TIPO_PESSOA: CNPJ / CNPJ: ${info.cnpj} / FAVORECIDO: ${info.fav} / BANCO: ${info.banco} / AGÊNCIA(S/DIG): ${info.ag} / Conta(c/ Digito): ${cBase}-${cDig} / Tipo_Liq: DOC / Modo_Liq: STR / TipoConta_Favorecido: CORRENTE####`;
+                            }
+                            txtContent += linha + "\n";
+                        });
+                    }
+                }
+                txtContent += "99#IR";
+                
+                const blob = new Blob([txtContent], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = "INGRESSO E RETIRADA BRADESCO.txt";
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                document.getElementById('status').innerText = "✅ Arquivo gerado com sucesso!";
+                resolve();
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+</script>
+</body>
+</html>
